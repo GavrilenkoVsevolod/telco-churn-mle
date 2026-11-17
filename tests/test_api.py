@@ -77,3 +77,34 @@ def test_predict_out_of_range(client):
     payload = {**VALID_PAYLOAD, "tenure": -5}
     r = client.post("/predict", json=payload)
     assert r.status_code == 422
+
+
+def test_metrics_endpoint(client):
+    """/metrics возвращает Prometheus-формат и содержит наши метрики."""
+    r = client.get("/metrics")
+    assert r.status_code == 200
+    assert "churn_predictions_total" in r.text
+    assert "churn_prediction_latency_seconds" in r.text
+    assert "churn_probability" in r.text
+
+
+def test_metrics_increment_on_predict(client):
+    """После /predict счётчик предсказаний должен вырасти."""
+    # Запомним текущее значение
+    before = client.get("/metrics").text
+
+    # Сделаем предсказание
+    r = client.post("/predict", json=VALID_PAYLOAD)
+    assert r.status_code == 200
+
+    after = client.get("/metrics").text
+
+    # Извлекаем значение счётчика churn_predictions_total для label churn="true" или "false"
+    # Простой regex по строке метрики
+    import re
+
+    def total_predictions(text: str) -> float:
+        matches = re.findall(r'churn_predictions_total\{churn="(?:true|false)"\}\s+([\d.]+)', text)
+        return sum(float(m) for m in matches)
+
+    assert total_predictions(after) > total_predictions(before)

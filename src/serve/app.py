@@ -7,14 +7,22 @@ import joblib
 import mlflow
 import pandas as pd
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
+from src.serve.monitoring import (
+    PREDICTION_PROBABILITY,
+    PREDICTIONS_TOTAL,
+    get_logger,
+    timed_latency,
+)
 from src.serve.schemas import CustomerFeatures, PredictionResponse
 
 load_dotenv()
 
 MODEL_PATH = Path("artifacts/model.joblib")
 MODEL_VERSION = "local-joblib-v1"
+logger = get_logger()
 
 
 @asynccontextmanager
@@ -49,21 +57,42 @@ def health() -> dict:
 
 @app.post("/predict", response_model=PredictionResponse)
 def predict(features: CustomerFeatures) -> PredictionResponse:
-    """Предсказание вероятности оттока по признакам клиента."""
     model = getattr(app.state, "model", None)
     if model is None:
         raise HTTPException(status_code=503, detail="Модель не загружена")
 
-    # pydantic -> pandas DataFrame (ровно те колонки, что модель видела на обучении)
     df = pd.DataFrame([features.model_dump()])
 
-    try:
-        proba = float(model.predict_proba(df)[0, 1])
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"Ошибка предсказания: {e}") from e
+    with timed_latency():
+        try:
+            proba = float(model.predict_proba(df)[0, 1])
+        except Exception as e:  # noqa: BLE001
+            logger.error(
+                "prediction_failed",
+                extra={"event": {"error": str(e)}},
+            )
+            raise HTTPException(status_code=400, detail=f"Ошибка предсказания: {e}") from e
+
+    churn = proba >= 0.5
+    PREDICTIONS_TOTAL.labels(churn=str(churn).lower()).inc()
+    PREDICTION_PROBABILITY.observe(proba)
+
+    logger.info(
+        "prediction",
+        extra={
+            "event": {
+                "churn": churn,
+                "probability": round(proba, 4),
+                "model_version": app.state.model_version,
+                "tenure": features.tenure,
+                "monthly_charges": features.MonthlyCharges,
+                "contract": features.Contract,
+            }
+        },
+    )
 
     return PredictionResponse(
-        churn=proba >= 0.5,
+        churn=churn,
         probability=round(proba, 4),
         model_version=app.state.model_version,
     )
@@ -90,3 +119,9 @@ def model_info() -> dict:
         info["mlflow_error"] = str(e)
 
     return info
+
+
+@app.get("/metrics")
+def metrics() -> Response:
+    """Prometheus-метрики в текстовом формате."""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)

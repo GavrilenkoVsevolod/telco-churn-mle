@@ -40,3 +40,20 @@ wheels/
 mlflow.db
 mlflow.db-journal
 mlruns_artifacts/
+
+# Данные и артефакты MLflow
+data/
+mlruns/
+mlruns_artifacts/
+mlflow.db
+mlflow.db-journal
+
+# Ноутбуки и тесты (в рантайме не нужны)
+notebooks/
+tests/
+
+# Git, IDE
+.git/
+.gitignore
+.vscode/
+.idea/
